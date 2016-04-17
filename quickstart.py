@@ -1,8 +1,12 @@
 from __future__ import print_function
+import glob
 import httplib2
+import io
 import os
+import re
 
-from apiclient import discovery
+from apiclient import discovery, errors
+from apiclient.http import MediaIoBaseDownload
 import oauth2client
 from oauth2client import client
 from oauth2client import tools
@@ -15,7 +19,7 @@ except ImportError:
 
 # If modifying these scopes, delete your previously saved credentials
 # at ~/.credentials/drive-python-quickstart.json
-SCOPES = 'https://www.googleapis.com/auth/drive.metadata.readonly'
+SCOPES = 'https://www.googleapis.com/auth/drive.readonly'
 CLIENT_SECRET_FILE = os.path.expanduser('~/Downloads/client_id.json')
 APPLICATION_NAME = 'Drive API Python Quickstart'
 
@@ -48,25 +52,58 @@ def get_credentials():
         print('Storing credentials to ' + credential_path)
     return credentials
 
-def main():
+def initialize():
+    credentials = get_credentials()
+    http = credentials.authorize(httplib2.Http())
+    service = discovery.build('drive', 'v3', http=http)
+    return credentials, http, service
+
+
+def list_files((credentials, http, service)):
     """Shows basic usage of the Google Drive API.
 
     Creates a Google Drive API service object and outputs the names and IDs
     for up to 10 files.
     """
-    credentials = get_credentials()
-    http = credentials.authorize(httplib2.Http())
-    service = discovery.build('drive', 'v3', http=http)
+    credentials, http, service = initialize()
+    nextPageToken = None
+    while True:
+        print('.')
+        results = service.files().list(
+            pageSize=1000,fields="nextPageToken, files(id, name)",
+            pageToken=nextPageToken).execute()
+        items = results.get('files', [])
+        if not items:
+            print('No files found.')
+        else:
+            for item in items:
+                yield item['name'], item['id']
+        nextPageToken = results.get('nextPageToken')
+        if not nextPageToken:
+            break
 
-    results = service.files().list(
-        pageSize=10,fields="nextPageToken, files(id, name)").execute()
-    items = results.get('files', [])
-    if not items:
-        print('No files found.')
-    else:
-        print('Files:')
-        for item in items:
-            print('{0} ({1})'.format(item['name'], item['id']))
+def get_files():
+    credentials, http, service = initialize()
+    fntemplate = '/Users/alx/src/drive/python_files/%s-%s'
+    for fileName, fileId in list_files((credentials, http, service)):
+        savepath = fntemplate % (fileId, fileName)
+        if fileName.endswith('.py') and (not os.path.isfile(savepath)):
+            print('downloading', fileId, fileName)
+            request = service.files().get_media(fileId=fileId)
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while True:
+                try:
+                    status, done = downloader.next_chunk()
+                except errors.HttpError:
+                    done = True
+                    fh.write('\n###############################################################################\nFile truncated during download\n')
+                if done:
+                    break
+            o = open(savepath, 'w')
+            o.write(fh.getvalue())
+            o.close()
 
 if __name__ == '__main__':
-    main()
+    get_files()
